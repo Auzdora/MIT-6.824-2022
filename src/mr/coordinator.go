@@ -12,22 +12,16 @@ import (
 	"time"
 )
 
-// task state
 const (
+	// task state
 	UNSTARTED = 1
 	WORKING   = 2
 	DONE      = 3
-)
-
-// worker state
-const (
+	// worker state
 	IDLE    = 4
 	RUNNING = 5
 	DIED    = 6
-)
-
-// task
-const (
+	// what task
 	NONE   = 7
 	MAP    = 8
 	REDUCE = 9
@@ -93,10 +87,7 @@ func (c *Coordinator) DeployTask(args *TaskArgs, reply *TaskReply) error {
 	if c.nmtaskd < c.nmap && c.Wokers[args.Wkno].state == IDLE {
 		for idx := range c.MapTask {
 			if c.MapTask[idx].state == UNSTARTED {
-				c.Wokers[args.Wkno].task = MAP
-				c.Wokers[args.Wkno].state = RUNNING
-				c.Wokers[args.Wkno].runtime = time.Now()
-				c.Wokers[args.Wkno].taskno = idx
+				c.statechange(args.Wkno, MAP, idx, RUNNING, time.Now())
 				c.MapTask[idx].state = WORKING
 				c.nmtaskw++
 				reply.Task = MAP
@@ -123,11 +114,8 @@ func (c *Coordinator) DeployTask(args *TaskArgs, reply *TaskReply) error {
 		if c.nrtaskd < c.nreduce {
 			for idx := range c.ReduceTask {
 				if c.ReduceTask[idx].state == UNSTARTED {
-					c.Wokers[args.Wkno].task = REDUCE
-					c.Wokers[args.Wkno].state = RUNNING
-					c.Wokers[args.Wkno].runtime = time.Now()
+					c.statechange(args.Wkno, REDUCE, idx, RUNNING, time.Now())
 					c.ReduceTask[idx].state = WORKING
-					c.Wokers[args.Wkno].taskno = idx
 					c.nrtaskw++
 					reply.Task = REDUCE
 					reply.Taksno = c.ReduceTask[idx].taskno
@@ -162,6 +150,20 @@ func (c *Coordinator) DeployTask(args *TaskArgs, reply *TaskReply) error {
 	reply.Filelist = append(reply.Filelist, "ERROR")
 	c.lock.Unlock()
 	return nil
+}
+
+// for simplify the code, call when hold the lock
+func (c *Coordinator) statechange(
+	wkno int,
+	task int,
+	taskno int,
+	state int,
+	runtime time.Time,
+) {
+	c.Wokers[wkno].task = task
+	c.Wokers[wkno].taskno = taskno
+	c.Wokers[wkno].state = state
+	c.Wokers[wkno].runtime = runtime
 }
 
 // let a worker wait here
@@ -284,18 +286,15 @@ func (c *Coordinator) WorkTime() {
 	for {
 		c.lock.Lock()
 		for idx := 0; idx < c.nwoker; idx++ {
-			if c.Wokers[idx].state == RUNNING {
-				cost := time.Since(c.Wokers[idx].runtime).Seconds()
-				if cost > 10 {
-					c.Wokers[idx].state = DIED
-					taskno := c.Wokers[idx].taskno
-					if c.Wokers[idx].task == MAP {
-						c.MapTask[taskno].state = UNSTARTED
-					} else if c.Wokers[idx].task == REDUCE {
-						c.ReduceTask[taskno].state = UNSTARTED
-					}
-					c.Wokers[idx].task = NONE
+			if cost := time.Since(c.Wokers[idx].runtime).Seconds(); c.Wokers[idx].state == RUNNING && cost > 10 {
+				c.Wokers[idx].state = DIED
+				taskno := c.Wokers[idx].taskno
+				if c.Wokers[idx].task == MAP {
+					c.MapTask[taskno].state = UNSTARTED
+				} else if c.Wokers[idx].task == REDUCE {
+					c.ReduceTask[taskno].state = UNSTARTED
 				}
+				c.Wokers[idx].task = NONE
 			}
 		}
 		c.lock.Unlock()
