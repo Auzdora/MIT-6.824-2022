@@ -50,9 +50,7 @@ type Coordinator struct {
 	nwoker     int
 	nmap       int
 	nreduce    int
-	nmtaskw    int // number of map task working
 	nmtaskd    int // number of map task done
-	nrtaskw    int // number of reduce task working
 	nrtaskd    int // number of reduce task done
 }
 
@@ -84,12 +82,17 @@ func (c *Coordinator) Register(args *RegisterArgs, reply *RegisterReply) error {
 
 func (c *Coordinator) DeployTask(args *TaskArgs, reply *TaskReply) error {
 	c.lock.Lock()
-	if c.nmtaskd < c.nmap && c.Wokers[args.Wkno].state == IDLE {
+	if c.Wokers[args.Wkno].state != IDLE {
+		reply.Filelist = append(reply.Filelist, "ERROR")
+		c.lock.Unlock()
+		return nil
+	}
+
+	if c.nmtaskd < c.nmap {
 		for idx := range c.MapTask {
 			if c.MapTask[idx].state == UNSTARTED {
-				c.statechange(args.Wkno, MAP, idx, RUNNING, time.Now())
+				c.workerStateChange(args.Wkno, MAP, idx, RUNNING, time.Now())
 				c.MapTask[idx].state = WORKING
-				c.nmtaskw++
 				reply.Task = MAP
 				reply.Taksno = c.MapTask[idx].taskno
 				reply.Filelist = c.MapTask[idx].filelist
@@ -98,53 +101,33 @@ func (c *Coordinator) DeployTask(args *TaskArgs, reply *TaskReply) error {
 			}
 		}
 
-		for idx := range c.MapTask {
-			if c.MapTask[idx].state == WORKING {
-				c.Wokers[args.Wkno].task = NONE
-				c.Wokers[args.Wkno].state = IDLE
-				reply.Task = NONE
-				reply.Filelist = append(reply.Filelist, "WAIT")
+		c.insReply(args, reply, "WAIT")
+		c.lock.Unlock()
+		return nil
+	}
+
+	if c.nrtaskd < c.nreduce {
+		for idx := range c.ReduceTask {
+			if c.ReduceTask[idx].state == UNSTARTED {
+				c.workerStateChange(args.Wkno, REDUCE, idx, RUNNING, time.Now())
+				c.ReduceTask[idx].state = WORKING
+				reply.Task = REDUCE
+				reply.Taksno = c.ReduceTask[idx].taskno
+				reply.Filelist = c.ReduceTask[idx].filelist
 				c.lock.Unlock()
 				return nil
 			}
 		}
+
+		c.insReply(args, reply, "WAIT")
+		c.lock.Unlock()
+		return nil
 	}
 
-	if c.nmtaskd == c.nmap && c.Wokers[args.Wkno].state == IDLE {
-		if c.nrtaskd < c.nreduce {
-			for idx := range c.ReduceTask {
-				if c.ReduceTask[idx].state == UNSTARTED {
-					c.statechange(args.Wkno, REDUCE, idx, RUNNING, time.Now())
-					c.ReduceTask[idx].state = WORKING
-					c.nrtaskw++
-					reply.Task = REDUCE
-					reply.Taksno = c.ReduceTask[idx].taskno
-					reply.Filelist = c.ReduceTask[idx].filelist
-					c.lock.Unlock()
-					return nil
-				}
-			}
-
-			for idx := range c.ReduceTask {
-				if c.ReduceTask[idx].state == WORKING {
-					c.Wokers[args.Wkno].task = NONE
-					c.Wokers[args.Wkno].state = IDLE
-					reply.Task = NONE
-					reply.Filelist = append(reply.Filelist, "WAIT")
-					c.lock.Unlock()
-					return nil
-				}
-			}
-		}
-		if c.nrtaskd == c.nreduce {
-			c.Wokers[args.Wkno].task = NONE
-			c.Wokers[args.Wkno].state = IDLE
-			reply.Task = NONE
-			reply.Filelist = append(reply.Filelist, "EXIT")
-			c.lock.Unlock()
-			return nil
-		}
-
+	if c.nrtaskd == c.nreduce {
+		c.insReply(args, reply, "EXIT")
+		c.lock.Unlock()
+		return nil
 	}
 
 	reply.Filelist = append(reply.Filelist, "ERROR")
@@ -153,7 +136,7 @@ func (c *Coordinator) DeployTask(args *TaskArgs, reply *TaskReply) error {
 }
 
 // for simplify the code, call when hold the lock
-func (c *Coordinator) statechange(
+func (c *Coordinator) workerStateChange(
 	wkno int,
 	task int,
 	taskno int,
@@ -164,6 +147,14 @@ func (c *Coordinator) statechange(
 	c.Wokers[wkno].taskno = taskno
 	c.Wokers[wkno].state = state
 	c.Wokers[wkno].runtime = runtime
+}
+
+// reply and set for specific instructions
+func (c *Coordinator) insReply(args *TaskArgs, reply *TaskReply, instruction string) {
+	c.Wokers[args.Wkno].task = NONE
+	c.Wokers[args.Wkno].state = IDLE
+	reply.Task = NONE
+	reply.Filelist = append(reply.Filelist, instruction)
 }
 
 // let a worker wait here
